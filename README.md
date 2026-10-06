@@ -1,13 +1,4 @@
----
-AIGC:
-  ContentProducer: '001191110102MAD55U9H0F10002'
-  ContentPropagator: '001191110102MAD55U9H0F10002'
-  Label: '1'
-  ProduceID: '35ec269f-e54d-4098-a08c-1e06af632362'
-  PropagateID: '35ec269f-e54d-4098-a08c-1e06af632362'
-  ReservedCode1: '4214a20e-3132-49e2-9e67-e2d2d1df8b8a'
-  ReservedCode2: '4214a20e-3132-49e2-9e67-e2d2d1df8b8a'
----
+
 
 # yan totk unexplored
 
