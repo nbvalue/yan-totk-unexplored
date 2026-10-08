@@ -229,7 +229,16 @@ function pickLevel() {
 function tileImg(layer, lv, c, r) {
   const key = layer + "_" + lv + "_" + c + "_" + r;
   let im = tileCache.get(key);
-  if (!im) { im = new Image(); im.onload = render; im.src = "assets/tiles/" + layer + "/" + lv + "/" + c + "_" + r + ".png"; tileCache.set(key, im); }
+  if (!im) {
+    im = new Image(); im._retry = 0;
+    im.onload = render;
+    im.onerror = () => {
+      im._retry++;
+      if (im._retry < 6) { setTimeout(() => { im.src = im.src.split("?")[0] + "?r=" + im._retry + Math.floor(Math.random() * 999); }, 1500 * im._retry); }
+    };
+    im.src = "assets/tiles/" + layer + "/" + lv + "/" + c + "_" + r + ".png";
+    tileCache.set(key, im);
+  }
   return im;
 }
 function drawTiles() {
