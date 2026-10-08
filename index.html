@@ -38,7 +38,13 @@
     box-shadow: 0 2px 10px rgba(30,60,100,.10); padding: 10px 12px; font-size: 13px;
     max-height: calc(100vh - 140px); overflow-y: auto;
   }
+  #legend.hidden { display: none; }
   #legend h2 { font-size: 13px; color: #345; margin-bottom: 8px; font-weight: 600; }
+  .lg-go { margin-left: auto; font-size: 11px; color: #2f7fb8; opacity: 0; transition: opacity .15s; white-space: nowrap; }
+  .lg-row:hover .lg-go { opacity: 1; }
+  #zoomBtns { position: fixed; right: 14px; bottom: 48px; z-index: 50; display: flex; flex-direction: column; gap: 6px; }
+  #zoomBtns button { width: 40px; height: 40px; font-size: 22px; line-height: 1; background: rgba(255,255,255,.95); color: #1b4965; border: 1px solid #b9cadd; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 8px rgba(30,60,100,.14); }
+  #zoomBtns button:hover { background: #eef4fa; }
   .lg-group { color: #8a9aa8; font-size: 11px; margin: 7px 2px 3px; }
   .lg-row { display: flex; align-items: center; gap: 8px; padding: 3px 2px; cursor: pointer; user-select: none; }
   .lg-row:hover { background: #f0f6fb; border-radius: 4px; }
@@ -91,6 +97,7 @@
     <button data-layer="sky"><img src="assets/icons/sky.png" alt="">天空</button>
   </div>
   <button class="btn ghost" id="mode">显示：漏掉的</button>
+  <button class="btn ghost" id="legendToggle">图例 ▾</button>
   <span style="flex:1"></span>
   <button class="btn ghost" id="btnReset">清除手动标记</button>
 </div>
@@ -99,6 +106,10 @@
 <div id="hint">滚轮缩放 · 按住拖动平移 · 点击标记 = 标记为已完成 · 悬停查看详情（进度自动保存在本浏览器）</div>
 <div id="tooltip"></div>
 <div id="toast"></div>
+<div id="zoomBtns">
+  <button id="zoomIn" title="放大">＋</button>
+  <button id="zoomOut" title="缩小">－</button>
+</div>
 
 <div id="guide">
   <div class="card">
@@ -206,15 +217,48 @@ const isFound = (l, o) => state.found[l.key].has(o) || isManual(l, o);
 
 // ===== Canvas 与视图 =====
 const canvas = document.getElementById("map"), ctx = canvas.getContext("2d");
-// 地图按需加载（与 nro LoadLayerImage 一致）：首次只加载当前层，切换时再拉取
-const MAPS = { depths: null, surface: null, sky: null };
-function ensureMap(layer) {
-  if (!MAPS[layer]) {
-    const im = new Image();
-    im.onload = render;
-    im.onerror = () => { im._failed = true; render(); };
-    im.src = "assets/map/" + layer + "-small.png";
-    MAPS[layer] = im;
+// 瓦片地图：4 级分辨率 × 10×10 切片，按需加载（放大自动换高清级）
+const TILE_LEVELS = [ { w: 300, h: 300 }, { w: 600, h: 600 }, { w: 1200, h: 1200 }, { w: 1500, h: 1500 } ];
+const TILE_COL = 10, TILE_ROW = 10;
+const tileCache = new Map();   // key: layer_lv_c_r -> Image
+function pickLevel() {
+  const fit = Math.min(W / MAP_PX, (H - 52) / MAP_PX);
+  const ratio = view.zoom / fit;
+  return Math.max(0, Math.min(TILE_LEVELS.length - 1, Math.floor(Math.log2(ratio))));
+}
+function tileImg(layer, lv, c, r) {
+  const key = layer + "_" + lv + "_" + c + "_" + r;
+  let im = tileCache.get(key);
+  if (!im) { im = new Image(); im.onload = render; im.src = "assets/tiles/" + layer + "/" + lv + "/" + c + "_" + r + ".png"; tileCache.set(key, im); }
+  return im;
+}
+function drawTiles() {
+  const layer = state.layer, lv = pickLevel();
+  const lvW = TILE_LEVELS[lv].w, lvH = TILE_LEVELS[lv].h;
+  const tw = lvW / TILE_COL, th = lvH / TILE_ROW;
+  const sx0 = view.cx - W / 2 / view.zoom, sy0 = view.cy - H / 2 / view.zoom;
+  const sw = W / view.zoom, sh = H / view.zoom;
+  const c0 = Math.max(0, Math.floor(sx0 / tw)), c1 = Math.min(TILE_COL - 1, Math.floor((sx0 + sw) / tw));
+  const r0 = Math.max(0, Math.floor(sy0 / th)), r1 = Math.min(TILE_ROW - 1, Math.floor((sy0 + sh) / th));
+  ctx.imageSmoothingEnabled = view.zoom < 3;
+  for (let c = c0; c <= c1; c++) {
+    for (let r = r0; r <= r1; r++) {
+      const wx0 = c * tw, wy0 = r * th;
+      const cx = wx0 + tw / 2, cy = wy0 + th / 2;
+      let hit = null;
+      for (let k = lv; k >= 0; k--) {
+        const kW = TILE_LEVELS[k].w, kH = TILE_LEVELS[k].h;
+        const kc = Math.min(TILE_COL - 1, Math.floor(cx / (kW / TILE_COL)));
+        const kr = Math.min(TILE_ROW - 1, Math.floor(cy / (kH / TILE_ROW)));
+        const t = tileImg(layer, k, kc, kr);
+        if (t.complete && t.naturalWidth) { hit = { t, k, kc, kr }; break; }
+      }
+      if (!hit) continue;
+      const kW = TILE_LEVELS[hit.k].w, kH = TILE_LEVELS[hit.k].h;
+      const ktw = kW / TILE_COL, kth = kH / TILE_ROW;
+      const dx = (wx0 - view.cx) * view.zoom + W / 2, dy = (wy0 - view.cy) * view.zoom + H / 2;
+      ctx.drawImage(hit.t, hit.kc * ktw, hit.kr * kth, ktw, kth, dx, dy, tw * view.zoom, th * view.zoom);
+    }
   }
 }
 const ICONS = {};
@@ -222,6 +266,8 @@ LAYERS.forEach(l => { const im = new Image(); im.src = "assets/icons/" + l.icon 
 
 let DPR = window.devicePixelRatio || 1, W = 0, H = 0;
 const view = { cx: MAP_HALF, cy: MAP_HALF, zoom: 0.2 };
+let highlight = null;   // 图例遍历定位点 { def, o }
+let tour = { key: null, idx: 0 };
 
 function worldToScreen(wx, wz) {
   return [ (MAP_HALF + wx * MAP_SCALE - view.cx) * view.zoom + W / 2,
@@ -322,22 +368,7 @@ function showObj(l, o) {
 function render() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.clearRect(0, 0, W, H);
-  ensureMap(state.layer);  // 首次进入该层时才开始拉取底图（与 nro LoadLayerImage 一致）
-  const img = MAPS[state.layer];
-  if (img && img.complete && img.naturalWidth) {
-    const sx0 = view.cx - W / 2 / view.zoom, sy0 = view.cy - H / 2 / view.zoom;
-    const sw = W / view.zoom, sh = H / view.zoom;
-    const cx0 = Math.max(0, sx0), cy0 = Math.max(0, sy0);
-    const cx1 = Math.min(MAP_PX, sx0 + sw), cy1 = Math.min(MAP_PX, sy0 + sh);
-    if (cx1 > cx0 && cy1 > cy0) {
-      const dx = (cx0 - view.cx) * view.zoom + W / 2, dy = (cy0 - view.cy) * view.zoom + H / 2;
-      ctx.imageSmoothingEnabled = view.zoom < 3;
-      ctx.drawImage(img, cx0, cy0, cx1 - cx0, cy1 - cy0, dx, dy, (cx1 - cx0) * view.zoom, (cy1 - cy0) * view.zoom);
-    }
-  } else {
-    ctx.fillStyle = "#9db8cd"; ctx.font = "14px sans-serif"; ctx.textAlign = "center";
-    ctx.fillText(img && img._failed ? "地图加载失败，请刷新重试" : "地图加载中…", W / 2, H / 2);
-  }
+  drawTiles();   // 瓦片底图：按 zoom 自动选级，低清先顶替、高清加载后替换
   if (!state.loaded) return;
   // 呀哈哈路径线（start->end 两点线 或 flowers 花之路折线，与 nro Data.cpp 一致）
   ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(255,255,255,.85)";
@@ -392,6 +423,14 @@ function render() {
       }
     }
   }
+  // 图例遍历定位高亮
+  if (highlight) {
+    const [sx, sy] = objScreen(highlight.o);
+    ctx.beginPath(); ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+    ctx.lineWidth = 4; ctx.strokeStyle = "#ff2c2c"; ctx.stroke();
+    ctx.beginPath(); ctx.arc(sx, sy, 10, 0, Math.PI * 2);
+    ctx.lineWidth = 2.5; ctx.strokeStyle = "#fff"; ctx.stroke();
+  }
 }
 </script>
 <script>
@@ -439,6 +478,7 @@ window.addEventListener("mouseup", e => {
     if (h) {
       state.manual[h.def.key].add(objId(h.def, h.o));
       state.counts[h.def.key]++;
+      highlight = null;
       saveLS(); updateLegend(); render();
       toast("已标记完成：" + (h.o.display_name || h.def.label) + " · " + state.counts[h.def.key] + "/" + allItems[h.def.key].length);
     }
@@ -471,12 +511,24 @@ function updateLegend() {
     if (def.group !== group) { group = def.group; const g = document.createElement("div"); g.className = "lg-group"; g.textContent = group; box.appendChild(g); }
     const total = allItems[def.key].length;
     const found = state.counts[def.key] || 0;
-    const row = document.createElement("label"); row.className = "lg-row";
+    const row = document.createElement("div"); row.className = "lg-row";
     row.innerHTML = '<input type="checkbox" ' + (state.visible[def.key] ? "checked" : "") + '>' +
       '<span class="lg-sw"><img src="assets/icons/' + def.icon + '.png" alt=""></span>' +
       '<span class="lg-name">' + def.label + '</span>' +
-      '<span class="lg-count">' + found + "/" + total + "</span>";
+      '<span class="lg-count">' + found + "/" + total + "</span>" +
+      '<span class="lg-go">▶ 遍历</span>';
     row.querySelector("input").addEventListener("change", ev => { state.visible[def.key] = ev.target.checked; saveLS(); render(); });
+    row.addEventListener("click", ev => {
+      if (ev.target.tagName === "INPUT") return;
+      const list = allItems[def.key].filter(o => showObj(def, o));
+      if (!state.loaded || !list.length) { toast("尚未载入存档或该类别暂无可遍历的点"); return; }
+      if (tour.key !== def.key) { tour = { key: def.key, idx: 0 }; } else { tour.idx = (tour.idx + 1) % list.length; }
+      const o = list[tour.idx];
+      view.cx = MAP_HALF + o.position.x * MAP_SCALE; view.cy = MAP_HALF - o.position.z * MAP_SCALE;
+      view.zoom = Math.max(view.zoom, 4); clampView(); render();
+      highlight = { def, o };
+      toast("定位到" + def.label + " 第 " + (tour.idx + 1) + "/" + list.length + " 个（再次点击同一图例看下一个）");
+    });
     box.appendChild(row);
   }
 }
@@ -504,13 +556,30 @@ document.getElementById("btnReset").addEventListener("click", () => {
   LAYERS.forEach(l => state.manual[l.key] = new Set());
   saveLS(); toast("已清除全部手动标记（重新载入存档即可恢复真实进度）");
 });
+document.getElementById("legendToggle").addEventListener("click", () => {
+  const lg = document.getElementById("legend");
+  const hidden = lg.classList.toggle("hidden");
+  document.getElementById("legendToggle").textContent = hidden ? "图例 ▸" : "图例 ▾";
+  localStorage.setItem("totk-legend-hidden", hidden ? "1" : "0");
+});
+document.getElementById("zoomIn").addEventListener("click", () => zoomAt(1.6, W / 2, H / 2));
+document.getElementById("zoomOut").addEventListener("click", () => zoomAt(1 / 1.6, W / 2, H / 2));
+function zoomAt(f, px, py) {
+  const mx = view.cx + (px - W / 2) / view.zoom, my = view.cy + (py - H / 2) / view.zoom;
+  view.zoom *= f; clampView();
+  view.cx = mx - (px - W / 2) / view.zoom; view.cy = my - (py - H / 2) / view.zoom;
+  clampView(); render();
+}
 window.addEventListener("dragover", e => { e.preventDefault(); });
 window.addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]); });
 window.addEventListener("resize", resize);
 
 // ===== 启动 =====
 loadLS(); resize(); fitAll(); render(); updateLegend();
-ensureMap("surface");  // 仅预取地面层底图，地底/天空层切换时再按需加载
+if (localStorage.getItem("totk-legend-hidden") === "1") {
+  document.getElementById("legend").classList.add("hidden");
+  document.getElementById("legendToggle").textContent = "图例 ▸";
+}
 </script>
 </body>
 </html>
